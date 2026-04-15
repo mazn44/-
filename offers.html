@@ -422,8 +422,8 @@
         }
     }
 
-    // ==========================================
-    // رفع المنتجات للسحابة (Upload Logic)
+        // ==========================================
+    // رفع المنتجات للسحابة (النسخة المطورة والمستقرة 100%)
     // ==========================================
     window.uploadNewOffer = async function() {
         const titleInput = document.getElementById('offerTitle');
@@ -438,72 +438,106 @@
         const desc = descInput.value.trim();
         const file = fileInput.files[0];
 
+        // 1. فحص الحقول المطلوبة
         if (!title) return showToast('يرجى كتابة عنوان للمنتج أولاً!', true);
         if (!file) return showToast('لا تنسَ إرفاق صورة أو فيديو!', true);
 
+        // فحص حجم الملف (أقل من 20 ميجا لضمان سرعة التحميل)
+        if (file.size > 20 * 1024 * 1024) {
+            return showToast('حجم الملف كبير جداً! يرجى اختيار ملف أصغر.', true);
+        }
+
+        // 2. تجهيز الواجهة للتحميل
         btn.disabled = true;
         btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i> جاري الاتصال بالسحابة...';
         btn.classList.add('opacity-75', 'cursor-not-allowed');
         progContainer.classList.remove('hidden');
+        progBar.style.width = '0%';
+        progText.innerText = '0%';
 
-        const isVideo = file.type.startsWith('video');
-        const fileExt = file.name.split('.').pop();
-        const safeName = `ivan_item_${Date.now()}.${fileExt}`;
-        const storageRef = storage.ref(`offers/${safeName}`);
-        
-        const uploadTask = storageRef.put(file);
+        try {
+            const isVideo = file.type.startsWith('video');
+            const fileExt = file.name.split('.').pop();
+            const safeName = `ivan_item_${Date.now()}.${fileExt}`;
+            
+            // إنشاء مرجع آمن في Storage
+            const storageRef = storage.ref(`offers/${safeName}`);
+            const uploadTask = storageRef.put(file);
 
-        uploadTask.on('state_changed',
-            (snapshot) => {
-                const progress = Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100);
-                progBar.style.width = progress + '%';
-                progText.innerText = progress + '%';
-                if(progress > 0) btn.innerHTML = '<i class="fas fa-cloud-upload-alt mr-2"></i> جاري الرفع...';
-            },
-            (error) => {
-                console.error("Upload Error:", error);
-                showToast('فشل الرفع! تحقق من Rules السحابة', true);
-                resetUploadUI();
-            },
-            async () => {
-                try {
-                    btn.innerHTML = '<i class="fas fa-database mr-2"></i> حفظ البيانات...';
-                    const downloadURL = await uploadTask.snapshot.ref.getDownloadURL();
+            // 3. مراقبة عملية الرفع بدقة
+            uploadTask.on('state_changed',
+                (snapshot) => {
+                    // حساب النسبة المئوية
+                    const progress = Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100);
+                    progBar.style.width = progress + '%';
+                    progText.innerText = progress + '%';
                     
-                    await db.collection('offers').add({
-                        title: title,
-                        desc: desc,
-                        mediaUrl: downloadURL,
-                        mediaType: isVideo ? 'video' : 'image',
-                        storagePath: `offers/${safeName}`,
-                        createdAt: firebase.firestore.FieldValue.serverTimestamp()
-                    });
-
-                    showToast('تم إضافة المنتج بنجاح فائق! ✅');
+                    if(progress > 0 && progress < 100) {
+                        btn.innerHTML = `<i class="fas fa-cloud-upload-alt mr-2"></i> جاري الرفع (${progress}%)...`;
+                    }
+                },
+                (error) => {
+                    // نظام كشف الأخطاء الذكي
+                    console.error("Upload Error:", error);
+                    let errorMsg = 'خطأ في الرفع: ';
+                    if (error.code === 'storage/unauthorized') errorMsg += 'قواعد السحابة (Rules) تمنع الرفع.';
+                    else if (error.code === 'storage/canceled') errorMsg += 'تم إلغاء الرفع.';
+                    else if (error.code === 'storage/unknown') errorMsg += 'فشل الاتصال بالإنترنت أو السحابة غير مفعلة.';
+                    else errorMsg += error.message;
                     
-                    titleInput.value = '';
-                    descInput.value = '';
-                    fileInput.value = '';
-                    document.getElementById('fileNameDisplay').innerText = 'اضغط هنا لاختيار صورة أو فيديو';
-                    
+                    showToast(errorMsg, true);
                     resetUploadUI();
-                    loadPublicOffers();
-                    loadAdminProducts();
+                },
+                async () => {
+                    // 4. الحفظ في قاعدة البيانات بعد نجاح الرفع
+                    try {
+                        btn.innerHTML = '<i class="fas fa-database mr-2"></i> جاري حفظ البيانات...';
+                        const downloadURL = await uploadTask.snapshot.ref.getDownloadURL();
+                        
+                        await db.collection('offers').add({
+                            title: title,
+                            desc: desc,
+                            mediaUrl: downloadURL,
+                            mediaType: isVideo ? 'video' : 'image',
+                            storagePath: `offers/${safeName}`,
+                            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                        });
 
-                } catch (dbError) {
-                    console.error("Database Error:", dbError);
-                    showToast('رُفع الملف، لكن فشل الحفظ بالبيانات.', true);
-                    resetUploadUI();
+                        showToast('تم إضافة العرض بنجاح فائق! ✅');
+                        
+                        // تفريغ الحقول بعد النجاح
+                        titleInput.value = '';
+                        descInput.value = '';
+                        fileInput.value = '';
+                        document.getElementById('fileNameDisplay').innerText = 'اضغط هنا لاختيار صورة أو فيديو';
+                        
+                        resetUploadUI();
+                        loadPublicOffers(); // تحديث القائمة أمام الزبائن
+                        loadAdminProducts(); // تحديث القائمة في لوحة الإدارة
+
+                    } catch (dbError) {
+                        console.error("Database Error:", dbError);
+                        showToast('رُفعت الصورة، لكن حدث خطأ في حفظ النص بقاعدة البيانات!', true);
+                        resetUploadUI();
+                    }
                 }
-            }
-        );
+            );
 
-        function resetUploadUI() {
+            // دالة مساعدة لإعادة شكل الزر لطبيعته
+            function resetUploadUI() {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fas fa-paper-plane mr-2"></i> نشر العرض فوراً';
+                btn.classList.remove('opacity-75', 'cursor-not-allowed');
+                setTimeout(() => { progContainer.classList.add('hidden'); }, 2000);
+            }
+
+        } catch (err) {
+            console.error("Critical Error:", err);
+            showToast("خطأ غير متوقع: " + err.message, true);
             btn.disabled = false;
             btn.innerHTML = '<i class="fas fa-paper-plane mr-2"></i> نشر العرض فوراً';
             btn.classList.remove('opacity-75', 'cursor-not-allowed');
             progContainer.classList.add('hidden');
-            progBar.style.width = '0%';
         }
     };
 
